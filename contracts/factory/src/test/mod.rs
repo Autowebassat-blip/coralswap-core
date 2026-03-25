@@ -1,14 +1,30 @@
 use soroban_sdk::Env;
 
-// Placeholder WASM bytes — replace with real built artifacts for integration tests.
-// Build with: cargo build --target wasm32v1-none --release
-const PAIR_WASM: &[u8] = &[];
-const LP_TOKEN_WASM: &[u8] = &[];
-
 mod factory_tests {
     use super::*;
     use crate::{Factory, FactoryClient};
     use soroban_sdk::{testutils::Address as _, Address, Bytes, Vec};
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn load_wasm(file_name: &str) -> std::vec::Vec<u8> {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target");
+        let candidates = [
+            base.join("wasm32-unknown-unknown/release").join(file_name),
+            base.join("wasm32v1-none/release").join(file_name),
+        ];
+
+        for path in candidates {
+            if let Ok(bytes) = fs::read(&path) {
+                return bytes;
+            }
+        }
+
+        panic!(
+            "failed to read test wasm artifact {}; checked wasm32-unknown-unknown and wasm32v1-none release targets",
+            file_name
+        );
+    }
 
     /// Helper: sets up a fresh Env, deploys the factory, initializes it with
     /// real pair / LP-token WASM hashes, and returns commonly-needed handles.
@@ -25,10 +41,12 @@ mod factory_tests {
         let fee_to_setter = Address::generate(&env);
 
         // Upload real WASM so deployer().deploy() produces working contracts.
+        let pair_wasm = load_wasm("coralswap_pair.wasm");
+        let lp_token_wasm = load_wasm("coralswap_lp_token.wasm");
         let pair_wasm_hash =
-            env.deployer().upload_contract_wasm(Bytes::from_slice(&env, PAIR_WASM));
+            env.deployer().upload_contract_wasm(Bytes::from_slice(&env, &pair_wasm));
         let lp_token_wasm_hash =
-            env.deployer().upload_contract_wasm(Bytes::from_slice(&env, LP_TOKEN_WASM));
+            env.deployer().upload_contract_wasm(Bytes::from_slice(&env, &lp_token_wasm));
 
         client.initialize(
             &Vec::from_array(&env, [signer_1, signer_2, signer_3]),
@@ -194,10 +212,12 @@ mod factory_tests {
     fn test_double_initialization_fails() {
         let (env, client, _, _, _, fee_to_setter) = setup_env();
 
+        let pair_wasm = load_wasm("coralswap_pair.wasm");
+        let lp_token_wasm = load_wasm("coralswap_lp_token.wasm");
         let pair_wasm_hash =
-            env.deployer().upload_contract_wasm(Bytes::from_slice(&env, PAIR_WASM));
+            env.deployer().upload_contract_wasm(Bytes::from_slice(&env, &pair_wasm));
         let lp_token_wasm_hash =
-            env.deployer().upload_contract_wasm(Bytes::from_slice(&env, LP_TOKEN_WASM));
+            env.deployer().upload_contract_wasm(Bytes::from_slice(&env, &lp_token_wasm));
 
         let result = client.try_initialize(
             &Vec::from_array(

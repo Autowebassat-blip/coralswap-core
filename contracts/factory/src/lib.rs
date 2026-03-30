@@ -144,6 +144,15 @@ impl Factory {
     }
 
     pub fn pause(env: Env, signers: Vec<Address>) -> Result<(), FactoryError> {
+        let mut factory_storage =
+            storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
+
+        // Require a majority (threshold = ceil(n/2)) of the registered signers.
+        let threshold = (factory_storage.signers.len() + 1) / 2;
+        governance::verify_multisig(&env, &signers, threshold)?;
+
+        factory_storage.paused = true;
+        storage::set_factory_storage(&env, &factory_storage);
         let mut storage = storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
 
         // Find a signer in the call that matches a stored signer, then require its auth.
@@ -160,6 +169,14 @@ impl Factory {
     }
 
     pub fn unpause(env: Env, signers: Vec<Address>) -> Result<(), FactoryError> {
+        let mut factory_storage =
+            storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
+
+        let threshold = (factory_storage.signers.len() + 1) / 2;
+        governance::verify_multisig(&env, &signers, threshold)?;
+
+        factory_storage.paused = false;
+        storage::set_factory_storage(&env, &factory_storage);
         let mut storage = storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
 
         // Find a signer in the call that matches a stored signer, then require its auth.
@@ -227,5 +244,35 @@ impl Factory {
 
     pub fn is_paused(env: Env) -> bool {
         storage::get_factory_storage(&env).map(|s| s.paused).unwrap_or(false)
+    }
+
+    /// Proposes a WASM upgrade. Gated by multisig (threshold = ceil(n/2)).
+    pub fn propose_upgrade(
+        env: Env,
+        signers: Vec<Address>,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), FactoryError> {
+        let factory_storage =
+            storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
+        let threshold = (factory_storage.signers.len() + 1) / 2;
+        governance::verify_multisig(&env, &signers, threshold)?;
+        upgrade::propose_upgrade(&env, new_wasm_hash)
+    }
+
+    /// Executes a pending upgrade after the 72-hour timelock has elapsed.
+    pub fn execute_upgrade(env: Env) -> Result<(), FactoryError> {
+        upgrade::execute_upgrade(&env)
+    }
+
+    /// Cancels a pending upgrade. Gated by multisig.
+    pub fn cancel_upgrade(
+        env: Env,
+        signers: Vec<Address>,
+    ) -> Result<(), FactoryError> {
+        let factory_storage =
+            storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
+        let threshold = (factory_storage.signers.len() + 1) / 2;
+        governance::verify_multisig(&env, &signers, threshold)?;
+        upgrade::cancel_upgrade(&env)
     }
 }

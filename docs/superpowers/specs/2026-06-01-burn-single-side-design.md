@@ -100,17 +100,31 @@ reserve_preferred_final = reserve_preferred - share_preferred - swap_out
 
 ## K Invariant Verification
 
-Reuse the fee-adjusted K check from `swap_inner`:
+Reuse the fee-adjusted K check from `swap_inner`, applied to the **swap leg** only (post-burn reserves are the baseline):
 
 ```rust
-let k_before = reserve_preferred * reserve_unwanted * 100_000_000;
+// Baseline: post-burn reserves before the internal swap step
+let reserve_preferred_post_burn = reserve_preferred - share_preferred;
+let reserve_unwanted_post_burn  = reserve_unwanted  - share_unwanted;
 
-let balance_preferred_adj = reserve_preferred_final * 10_000
-    - swap_out * fee_bps as i128;   // swap_out is the "amount_in" to the pool side
-let balance_unwanted_adj  = reserve_unwanted_final * 10_000
-    - share_unwanted * fee_bps as i128;
+let k_before = reserve_preferred_post_burn
+    .checked_mul(reserve_unwanted_post_burn)
+    .ok_or(PairError::Overflow)?
+    .checked_mul(100_000_000)
+    .ok_or(PairError::Overflow)?;
 
-let k_after = balance_preferred_adj * balance_unwanted_adj;
+// amount_preferred_in = 0 (preferred only exits), amount_unwanted_in = share_unwanted
+let balance_preferred_adj = reserve_preferred_final
+    .checked_mul(10_000)
+    .ok_or(PairError::Overflow)?;   // - 0 * fee_bps
+
+let balance_unwanted_adj = reserve_unwanted_final
+    .checked_mul(10_000)
+    .ok_or(PairError::Overflow)?
+    .checked_sub(share_unwanted * fee_bps as i128)
+    .ok_or(PairError::Overflow)?;
+
+let k_after = balance_preferred_adj.checked_mul(balance_unwanted_adj).ok_or(PairError::Overflow)?;
 
 if k_after < k_before { return Err(PairError::InvalidK); }
 ```

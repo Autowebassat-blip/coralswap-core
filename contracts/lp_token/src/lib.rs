@@ -135,7 +135,7 @@ impl LpToken {
             env.storage().persistent().get::<LpTokenKey, AllowanceEntry>(&key)
         {
             // Check if allowance has expired
-            if allowance_entry.expiration_ledger < env.ledger().sequence() {
+            if allowance_entry.expiration_ledger <= env.ledger().sequence() {
                 return 0;
             }
             allowance_entry.amount
@@ -157,8 +157,8 @@ impl LpToken {
         from.require_auth();
 
         // Validate expiration ledger (unless setting to 0)
-        if amount != 0 && expiration_ledger < env.ledger().sequence() {
-            return Err(LpTokenError::Unauthorized);
+        if amount != 0 && expiration_ledger <= env.ledger().sequence() {
+            return Err(LpTokenError::InvalidExpiration);
         }
 
         let key = LpTokenKey::Allowance(from.clone(), spender.clone());
@@ -394,7 +394,7 @@ impl LpToken {
             env.storage().persistent().get(&key).ok_or(LpTokenError::InsufficientAllowance)?;
 
         // Check if allowance has expired
-        if allowance_entry.expiration_ledger < env.ledger().sequence() {
+        if allowance_entry.expiration_ledger <= env.ledger().sequence() {
             return Err(LpTokenError::InsufficientAllowance);
         }
 

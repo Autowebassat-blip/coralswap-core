@@ -74,7 +74,8 @@ fn setup_pair() -> (
         &String::from_str(&env, "CLP"),
     );
 
-    pair_client.initialize(&factory, &token_a_id, &token_b_id, &lp_id);
+    let pair_admin = Address::generate(&env);
+    pair_client.initialize(&factory, &token_a_id, &token_b_id, &lp_id, &30u32, &pair_admin);
 
     (env, pair_client, token_a, token_b, lp_client)
 }

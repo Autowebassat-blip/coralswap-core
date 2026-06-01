@@ -18,12 +18,12 @@ mod test;
 
 use dynamic_fee::compute_fee_bps;
 use errors::PairError;
-use events::PairEvents;
+use events::{PairEvents, PauseEvents};
 use math::MINIMUM_LIQUIDITY;
 use soroban_sdk::{contract, contractclient, contractimpl, token::TokenClient, Address, Env};
 use storage::{
-    get_fee_state, get_pair_state, set_fee_state, set_pair_state, set_reentrancy_guard, FeeState,
-    ReentrancyGuard,
+    get_fee_state, get_fee_stats_state, get_pair_state, set_fee_state, set_fee_stats_state,
+    set_pair_state, set_reentrancy_guard, FeeState, FeeStats, ReentrancyGuard,
 };
 
 #[contractclient(name = "LpTokenClient")]
@@ -48,6 +48,8 @@ impl Pair {
         token_a: Address,
         token_b: Address,
         lp_token: Address,
+        fee_bps: u32,
+        admin: Address,
     ) -> Result<(), PairError> {
         // 1. Double-init guard
         if get_pair_state(&env).is_some() {
@@ -70,17 +72,22 @@ impl Pair {
             price_a_cumulative: 0,
             price_b_cumulative: 0,
             k_last: 0,
+            fee_bps,
+            admin,
+            paused: false,
         };
 
         set_pair_state(&env, &state);
 
-        // 4. Initialize FeeState with sane defaults
+        // 4. Initialize FeeState — use the tier's fee_bps as baseline.
+        // min = baseline / 3 (at least 1); max = baseline * 10 / 3
+        // For standard 30 bps: min=10, max=100.
         let fee_state = FeeState {
             vol_accumulator: 0,
             ema_alpha: 10_000_000_000_000, // 10% of SCALE (1e14)
-            baseline_fee_bps: 30,
-            min_fee_bps: 10,
-            max_fee_bps: 100,
+            baseline_fee_bps: fee_bps,
+            min_fee_bps: (fee_bps / 3).max(1),
+            max_fee_bps: fee_bps.saturating_mul(10) / 3,
             ramp_up_multiplier: 2,
             cooldown_divisor: 2,
             last_fee_update: 0,
@@ -91,7 +98,19 @@ impl Pair {
         // 5. Initialize ReentrancyGuard as unlocked
         set_reentrancy_guard(&env, &ReentrancyGuard { locked: false });
 
-        // 6. Extend instance storage TTL (~7 days at 5s/ledger)
+        // 6. Initialize FeeStatsState with zeroes
+        set_fee_stats_state(
+            &env,
+            &storage::FeeStatsState {
+                fees_collected_0: 0,
+                fees_collected_1: 0,
+                window_start: env.ledger().timestamp(),
+                volume_current: 0,
+                volume_previous: 0,
+            },
+        );
+
+        // 7. Extend instance storage TTL (~7 days at 5s/ledger)
         const TTL_THRESHOLD: u32 = 60_480;
         const TTL_EXTEND_TO: u32 = 120_960;
         env.storage().instance().extend_ttl(TTL_THRESHOLD, TTL_EXTEND_TO);
@@ -107,6 +126,9 @@ impl Pair {
         to.require_auth();
 
         let mut state = get_pair_state(&env).ok_or(PairError::NotInitialized)?;
+        if state.paused {
+            return Err(PairError::Paused);
+        }
         let contract = env.current_contract_address();
 
         let balance_a = TokenClient::new(&env, &state.token_a).balance(&contract);
@@ -172,6 +194,9 @@ impl Pair {
         to.require_auth();
 
         let mut state = get_pair_state(&env).ok_or(PairError::NotInitialized)?;
+        if state.paused {
+            return Err(PairError::Paused);
+        }
         let contract = env.current_contract_address();
 
         let lp_balance = TokenClient::new(&env, &state.lp_token).balance(&contract);
@@ -262,6 +287,70 @@ impl Pair {
         }
     }
 
+    /// Returns aggregate fee and volume statistics (read-only, no state change).
+    pub fn get_fee_stats(env: Env) -> FeeStats {
+        let stats = get_fee_stats_state(&env);
+        let fee_bps = match get_fee_state(&env) {
+            Some(fs) => compute_fee_bps(&fs),
+            None => 30,
+        };
+
+        let now = env.ledger().timestamp();
+        const WINDOW: u64 = 86_400;
+
+        let volume_24h = if now.saturating_sub(stats.window_start) < WINDOW {
+            // Within current window: blend with proportion of previous window still in range.
+            let elapsed = now.saturating_sub(stats.window_start);
+            let prev_weight = (WINDOW - elapsed) as i128;
+            let prev_contribution = stats
+                .volume_previous
+                .saturating_mul(prev_weight)
+                .checked_div(WINDOW as i128)
+                .unwrap_or(0);
+            stats.volume_current.saturating_add(prev_contribution)
+        } else {
+            // Current window has expired; no meaningful data.
+            0
+        };
+
+        FeeStats { volume_24h, fees_collected_0: stats.fees_collected_0, fees_collected_1: stats.fees_collected_1, fee_bps }
+    }
+
+    // ─────────────────────────────────────────
+    // Admin: pause / unpause
+    // ─────────────────────────────────────────
+
+    /// Pauses all state-mutating operations. Only callable by the pair admin.
+    pub fn pause(env: Env, by: Address) -> Result<(), PairError> {
+        by.require_auth();
+        let mut state = get_pair_state(&env).ok_or(PairError::NotInitialized)?;
+        if by != state.admin {
+            return Err(PairError::Unauthorized);
+        }
+        state.paused = true;
+        set_pair_state(&env, &state);
+        PauseEvents::paused(&env, &by, env.ledger().sequence());
+        Ok(())
+    }
+
+    /// Resumes all state-mutating operations. Only callable by the pair admin.
+    pub fn unpause(env: Env, by: Address) -> Result<(), PairError> {
+        by.require_auth();
+        let mut state = get_pair_state(&env).ok_or(PairError::NotInitialized)?;
+        if by != state.admin {
+            return Err(PairError::Unauthorized);
+        }
+        state.paused = false;
+        set_pair_state(&env, &state);
+        PauseEvents::unpaused(&env, &by, env.ledger().sequence());
+        Ok(())
+    }
+
+    /// Returns whether this pair is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        get_pair_state(&env).map(|s| s.paused).unwrap_or(false)
+    }
+
     // ─────────────────────────────────────────
     // Sync
     // ─────────────────────────────────────────
@@ -297,6 +386,9 @@ impl Pair {
         }
 
         let mut pair = get_pair_state(env).ok_or(PairError::NotInitialized)?;
+        if pair.paused {
+            return Err(PairError::Paused);
+        }
         let mut fee_state = get_fee_state(env).ok_or(PairError::NotInitialized)?;
 
         if amount_a_out >= pair.reserve_a || amount_b_out >= pair.reserve_b {
@@ -407,6 +499,38 @@ impl Pair {
                 trade_size,
                 total_reserve,
             );
+        }
+
+        // Update fee stats: accumulate fees collected and rolling 24h volume.
+        {
+            const WINDOW: u64 = 86_400;
+            let now = pair.block_timestamp_last;
+            let mut stats = get_fee_stats_state(env);
+
+            // Roll the window if 24 h have elapsed.
+            if now.saturating_sub(stats.window_start) >= WINDOW {
+                stats.volume_previous = stats.volume_current;
+                stats.volume_current = 0;
+                stats.window_start = now;
+            }
+
+            // Volume = total input routed through this swap.
+            let trade_volume = amount_a_in.saturating_add(amount_b_in);
+            stats.volume_current = stats.volume_current.saturating_add(trade_volume);
+
+            // Fees collected = input * fee_bps / 10_000 per token.
+            let fee_a = amount_a_in
+                .checked_mul(fee_bps as i128)
+                .map(|v| v / 10_000)
+                .unwrap_or(0);
+            let fee_b = amount_b_in
+                .checked_mul(fee_bps as i128)
+                .map(|v| v / 10_000)
+                .unwrap_or(0);
+            stats.fees_collected_0 = stats.fees_collected_0.saturating_add(fee_a);
+            stats.fees_collected_1 = stats.fees_collected_1.saturating_add(fee_b);
+
+            set_fee_stats_state(env, &stats);
         }
 
         set_pair_state(env, &pair);

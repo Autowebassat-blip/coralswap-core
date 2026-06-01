@@ -1,5 +1,28 @@
 use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
 
+/// Fee tier options for pairs (in basis points).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FeeTier {
+    /// 0.05 % — for stable pairs (e.g. USDC/EURC).
+    Low,
+    /// 0.30 % — standard volatile pairs.
+    Standard,
+    /// 1.00 % — high-volatility pairs.
+    High,
+}
+
+impl FeeTier {
+    /// Returns the fee in basis points for this tier.
+    pub fn fee_bps(&self) -> u32 {
+        match self {
+            FeeTier::Low => 5,
+            FeeTier::Standard => 30,
+            FeeTier::High => 100,
+        }
+    }
+}
+
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 17280; // ~1 day in 5s ledgers
 const INSTANCE_BUMP_AMOUNT: u32 = 518400; // ~30 days in 5s ledgers
 
@@ -22,6 +45,8 @@ pub struct FactoryStorage {
 pub enum DataKey {
     Factory,
     Pair(Address, Address),
+    /// Per-tier pair lookup: (token_0, token_1, fee_tier) → pair address.
+    TierPair(Address, Address, FeeTier),
     PendingUpgrade,
     PairList,
 }
@@ -61,13 +86,13 @@ pub fn set_factory_storage(env: &Env, storage: &FactoryStorage) {
     env.storage().instance().set(&DataKey::Factory, storage);
 }
 
-pub fn get_pair(env: &Env, token_a: Address, token_b: Address) -> Option<Address> {
-    let key = DataKey::Pair(token_a, token_b);
+pub fn get_tier_pair(env: &Env, token_a: Address, token_b: Address, tier: FeeTier) -> Option<Address> {
+    let key = DataKey::TierPair(token_a, token_b, tier);
     env.storage().instance().get(&key)
 }
 
-pub fn set_pair(env: &Env, token_a: Address, token_b: Address, pair: Address) {
-    let key = DataKey::Pair(token_a, token_b);
+pub fn set_tier_pair(env: &Env, token_a: Address, token_b: Address, tier: FeeTier, pair: Address) {
+    let key = DataKey::TierPair(token_a, token_b, tier);
     env.storage().instance().set(&key, &pair);
 }
 

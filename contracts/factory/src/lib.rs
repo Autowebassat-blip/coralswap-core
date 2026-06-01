@@ -15,7 +15,7 @@ mod test;
 use errors::FactoryError;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{contract, contractclient, contractimpl, Address, Bytes, BytesN, Env, Vec};
-use storage::FactoryStorage;
+use storage::{FactoryStorage, FeeTier};
 
 #[contractclient(name = "PairClient")]
 pub trait PairInterface {
@@ -25,6 +25,8 @@ pub trait PairInterface {
         token_a: Address,
         token_b: Address,
         lp_token: Address,
+        fee_bps: u32,
+        admin: Address,
     ) -> Result<(), FactoryError>;
 }
 
@@ -75,6 +77,7 @@ impl Factory {
         env: Env,
         token_a: Address,
         token_b: Address,
+        fee_tier: FeeTier,
     ) -> Result<Address, FactoryError> {
         if token_a == token_b {
             return Err(FactoryError::IdenticalTokens);
@@ -83,7 +86,10 @@ impl Factory {
         let (token_0, token_1) =
             if token_a < token_b { (token_a, token_b) } else { (token_b, token_a) };
 
-        if storage::get_pair(&env, token_0.clone(), token_1.clone()).is_some() {
+        // Reject if this (token_0, token_1, fee_tier) pair already exists.
+        if storage::get_tier_pair(&env, token_0.clone(), token_1.clone(), fee_tier.clone())
+            .is_some()
+        {
             return Err(FactoryError::PairExists);
         }
 
@@ -94,10 +100,13 @@ impl Factory {
             return Err(FactoryError::ProtocolPaused);
         }
 
-        // 1. Deploy Pair
+        let tier_fee_bps = fee_tier.fee_bps();
+
+        // 1. Deploy Pair — salt includes fee_tier_bps so same tokens at different tiers get distinct addresses.
         let mut salt_data = Bytes::new(&env);
         salt_data.append(&token_0.clone().to_xdr(&env));
         salt_data.append(&token_1.clone().to_xdr(&env));
+        salt_data.append(&tier_fee_bps.to_xdr(&env));
         let salt = env.crypto().sha256(&salt_data);
 
         let pair_address = env
@@ -115,6 +124,8 @@ impl Factory {
             .with_current_contract(lp_salt)
             .deploy(factory_storage.lp_token_wasm_hash.clone());
 
+        let admin = factory_storage.fee_to_setter.clone();
+
         // 3. Initialize Pair — propagate any error; do NOT store if this fails
         let pair_client = PairClient::new(&env, &pair_address);
         let _ = pair_client
@@ -123,12 +134,14 @@ impl Factory {
                 &token_0,
                 &token_1,
                 &lp_token_address,
+                &tier_fee_bps,
+                &admin,
             )
             .map_err(|_| FactoryError::NotInitialized)?;
 
-        // 4. Store pair — only reached when initialize() succeeded
-        storage::set_pair(&env, token_0.clone(), token_1.clone(), pair_address.clone());
-        storage::set_pair(&env, token_1.clone(), token_0.clone(), pair_address.clone());
+        // 4. Store pair under tiered key (both orderings for convenience).
+        storage::set_tier_pair(&env, token_0.clone(), token_1.clone(), fee_tier.clone(), pair_address.clone());
+        storage::set_tier_pair(&env, token_1.clone(), token_0.clone(), fee_tier.clone(), pair_address.clone());
 
         let pair_index = factory_storage.pair_count;
         factory_storage.pair_count += 1;
@@ -144,8 +157,8 @@ impl Factory {
         Ok(pair_address)
     }
 
-    pub fn get_pair(env: Env, token_a: Address, token_b: Address) -> Option<Address> {
-        storage::get_pair(&env, token_a, token_b)
+    pub fn get_pair(env: Env, token_a: Address, token_b: Address, fee_tier: FeeTier) -> Option<Address> {
+        storage::get_tier_pair(&env, token_a, token_b, fee_tier)
     }
 
     pub fn get_all_pairs(env: Env, offset: u32, limit: u32) -> Result<Vec<Address>, FactoryError> {

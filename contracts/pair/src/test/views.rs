@@ -37,7 +37,8 @@ fn test_get_reserves_initialized() {
     let token_b = Address::generate(&env);
     let lp_token = Address::generate(&env);
 
-    pair_client.initialize(&factory, &token_a, &token_b, &lp_token);
+    let admin = Address::generate(&env);
+    pair_client.initialize(&factory, &token_a, &token_b, &lp_token, &30u32, &admin);
 
     let (reserve_a, reserve_b, timestamp) = pair_client.get_reserves();
 
@@ -69,7 +70,8 @@ fn test_get_current_fee_bps_initialized_no_volatility() {
     let token_b = Address::generate(&env);
     let lp_token = Address::generate(&env);
 
-    pair_client.initialize(&factory, &token_a, &token_b, &lp_token);
+    let admin = Address::generate(&env);
+    pair_client.initialize(&factory, &token_a, &token_b, &lp_token, &30u32, &admin);
 
     // Also we need to simulate the fee state being set by initialization or default.
     // Actually, `initialize` does NOT set the FeeState. It's set during `swap` when decaying/updating.
@@ -104,6 +106,9 @@ fn test_get_reserves_after_state_change() {
         price_a_cumulative: 0,
         price_b_cumulative: 0,
         k_last: 2000000,
+        fee_bps: 30,
+        admin: Address::generate(&env),
+        paused: false,
     };
 
     // Hack: use env to invoke bare function or just use pair_client which invokes `Pair` under the hood.

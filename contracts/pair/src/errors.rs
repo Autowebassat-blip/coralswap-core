@@ -23,6 +23,7 @@ pub enum PairError {
     FeeOverflow = 116,
     FlashCallbackFailed = 117,
     FlashLoanFeeTooHigh = 118,
+    Unauthorized = 119,
 }
 
 #[contracterror]

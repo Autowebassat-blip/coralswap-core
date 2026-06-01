@@ -1,5 +1,23 @@
 use soroban_sdk::{symbol_short, Address, Env, Symbol};
 
+pub struct PauseEvents;
+
+impl PauseEvents {
+    pub fn paused(env: &Env, by: &Address, ledger: u32) {
+        env.events().publish(
+            (symbol_short!("paused"), by.clone()),
+            ledger,
+        );
+    }
+
+    pub fn unpaused(env: &Env, by: &Address, ledger: u32) {
+        env.events().publish(
+            (symbol_short!("unpaused"), by.clone()),
+            ledger,
+        );
+    }
+}
+
 pub struct PairEvents;
 
 impl PairEvents {

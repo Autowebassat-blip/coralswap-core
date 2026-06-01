@@ -3,6 +3,7 @@ use soroban_sdk::Env;
 mod factory_tests {
     use super::*;
     use crate::{Factory, FactoryClient};
+    use crate::storage::FeeTier;
     use soroban_sdk::{testutils::Address as _, Address, Bytes, Vec};
     use std::fs;
     use std::path::PathBuf;
@@ -313,10 +314,10 @@ mod factory_tests {
     fn test_create_pair_happy_path() {
         let (_env, client, token_a, token_b, _, _, _) = setup_env();
 
-        let pair_addr = client.create_pair(&token_a, &token_b);
+        let pair_addr = client.create_pair(&token_a, &token_b, &FeeTier::Standard);
 
         // The returned pair address should be retrievable via get_pair.
-        let stored = client.get_pair(&token_a, &token_b);
+        let stored = client.get_pair(&token_a, &token_b, &FeeTier::Standard);
         assert_eq!(stored, Some(pair_addr.clone()));
     }
 
@@ -324,10 +325,10 @@ mod factory_tests {
     fn test_create_pair_reverse_order_returns_same_pair() {
         let (_env, client, token_a, token_b, _, _, _) = setup_env();
 
-        let pair_addr = client.create_pair(&token_a, &token_b);
+        let pair_addr = client.create_pair(&token_a, &token_b, &FeeTier::Standard);
 
         // Querying with reversed token order must return the same pair.
-        let stored_reverse = client.get_pair(&token_b, &token_a);
+        let stored_reverse = client.get_pair(&token_b, &token_a, &FeeTier::Standard);
         assert_eq!(stored_reverse, Some(pair_addr));
     }
 
@@ -339,9 +340,9 @@ mod factory_tests {
         let token_y = Address::generate(&env);
 
         // Create with (x, y), then verify both orderings resolve.
-        let pair_1 = client.create_pair(&token_x, &token_y);
-        assert_eq!(client.get_pair(&token_x, &token_y), Some(pair_1.clone()));
-        assert_eq!(client.get_pair(&token_y, &token_x), Some(pair_1));
+        let pair_1 = client.create_pair(&token_x, &token_y, &FeeTier::Standard);
+        assert_eq!(client.get_pair(&token_x, &token_y, &FeeTier::Standard), Some(pair_1.clone()));
+        assert_eq!(client.get_pair(&token_y, &token_x, &FeeTier::Standard), Some(pair_1));
     }
 
     #[test]
@@ -350,9 +351,9 @@ mod factory_tests {
 
         let token_c = Address::generate(&env);
 
-        let pair_ab = client.create_pair(&token_a, &token_b);
-        let pair_ac = client.create_pair(&token_a, &token_c);
-        let pair_bc = client.create_pair(&token_b, &token_c);
+        let pair_ab = client.create_pair(&token_a, &token_b, &FeeTier::Standard);
+        let pair_ac = client.create_pair(&token_a, &token_c, &FeeTier::Standard);
+        let pair_bc = client.create_pair(&token_b, &token_c, &FeeTier::Standard);
 
         // Each pair should have a distinct address.
         assert_ne!(pair_ab, pair_ac);
@@ -360,9 +361,9 @@ mod factory_tests {
         assert_ne!(pair_ac, pair_bc);
 
         // All pairs should be retrievable.
-        assert_eq!(client.get_pair(&token_a, &token_b), Some(pair_ab));
-        assert_eq!(client.get_pair(&token_a, &token_c), Some(pair_ac));
-        assert_eq!(client.get_pair(&token_b, &token_c), Some(pair_bc));
+        assert_eq!(client.get_pair(&token_a, &token_b, &FeeTier::Standard), Some(pair_ab));
+        assert_eq!(client.get_pair(&token_a, &token_c, &FeeTier::Standard), Some(pair_ac));
+        assert_eq!(client.get_pair(&token_b, &token_c, &FeeTier::Standard), Some(pair_bc));
     }
 
     // ── create_pair: error paths ─────────────────────────────────────────────
@@ -371,7 +372,7 @@ mod factory_tests {
     fn test_create_pair_identical_tokens() {
         let (_env, client, token_a, _token_b, _, _, _) = setup_env();
 
-        let result = client.try_create_pair(&token_a, &token_a);
+        let result = client.try_create_pair(&token_a, &token_a, &FeeTier::Standard);
         assert!(result.is_err());
     }
 
@@ -380,10 +381,10 @@ mod factory_tests {
         let (_env, client, token_a, token_b, _, _, _) = setup_env();
 
         // First creation succeeds.
-        client.create_pair(&token_a, &token_b);
+        client.create_pair(&token_a, &token_b, &FeeTier::Standard);
 
         // Second creation with same tokens must fail (PairExists).
-        let result = client.try_create_pair(&token_a, &token_b);
+        let result = client.try_create_pair(&token_a, &token_b, &FeeTier::Standard);
         assert!(result.is_err());
     }
 
@@ -392,10 +393,10 @@ mod factory_tests {
         let (_env, client, token_a, token_b, _, _, _) = setup_env();
 
         // Create (A, B).
-        client.create_pair(&token_a, &token_b);
+        client.create_pair(&token_a, &token_b, &FeeTier::Standard);
 
         // Attempt (B, A) — canonical sort means this is the same pair.
-        let result = client.try_create_pair(&token_b, &token_a);
+        let result = client.try_create_pair(&token_b, &token_a, &FeeTier::Standard);
         assert!(result.is_err());
     }
 
@@ -408,7 +409,7 @@ mod factory_tests {
         assert!(client.is_paused());
 
         // Creating a pair while paused must fail.
-        let result = client.try_create_pair(&token_a, &token_b);
+        let result = client.try_create_pair(&token_a, &token_b, &FeeTier::Standard);
         assert!(result.is_err());
     }
 
@@ -422,8 +423,8 @@ mod factory_tests {
         assert!(!client.is_paused());
 
         // Creating after unpause should succeed.
-        let pair_addr = client.create_pair(&token_a, &token_b);
-        assert_eq!(client.get_pair(&token_a, &token_b), Some(pair_addr));
+        let pair_addr = client.create_pair(&token_a, &token_b, &FeeTier::Standard);
+        assert_eq!(client.get_pair(&token_a, &token_b, &FeeTier::Standard), Some(pair_addr));
     }
 
     // ── get_pair: edge cases ─────────────────────────────────────────────────
@@ -431,7 +432,7 @@ mod factory_tests {
     #[test]
     fn test_get_pair_returns_none_for_missing() {
         let (_env, client, token_a, token_b, _, _, _) = setup_env();
-        assert!(client.get_pair(&token_a, &token_b).is_none());
+        assert!(client.get_pair(&token_a, &token_b, &FeeTier::Standard).is_none());
     }
 
     // ── Multisig governance (Issue #98) ──────────────────────────────────────
@@ -603,8 +604,8 @@ mod factory_tests {
         let (env, client, token_a, token_b, _, _, _) = setup_env();
         let token_c = Address::generate(&env);
 
-        let pair1 = client.create_pair(&token_a, &token_b);
-        let pair2 = client.create_pair(&token_a, &token_c);
+        let pair1 = client.create_pair(&token_a, &token_b, &FeeTier::Standard);
+        let pair2 = client.create_pair(&token_a, &token_c, &FeeTier::Standard);
 
         assert_eq!(client.get_pair_count(), 2);
 

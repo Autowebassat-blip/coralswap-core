@@ -13,6 +13,12 @@ pub struct PairStorage {
     pub price_a_cumulative: i128,
     pub price_b_cumulative: i128,
     pub k_last: i128,
+    /// Fee tier in basis points set at creation time (5 / 30 / 100).
+    pub fee_bps: u32,
+    /// Admin address authorised to pause/unpause this pair.
+    pub admin: Address,
+    /// Whether this pair is currently paused.
+    pub paused: bool,
 }
 
 #[contracttype]
@@ -41,6 +47,36 @@ pub struct OracleState {
     pub observations: soroban_sdk::Vec<(u64, i128, i128)>,
 }
 
+/// Cumulative fee and volume statistics for the pair.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct FeeStatsState {
+    /// Cumulative fees collected in token A (stroops) since deployment.
+    pub fees_collected_0: i128,
+    /// Cumulative fees collected in token B (stroops) since deployment.
+    pub fees_collected_1: i128,
+    /// Start timestamp (ledger seconds) of the current 24 h window.
+    pub window_start: u64,
+    /// Volume accumulated in the current window (sum of input amounts).
+    pub volume_current: i128,
+    /// Volume accumulated in the previous 24 h window (for rolling estimate).
+    pub volume_previous: i128,
+}
+
+/// View-only aggregate returned by `get_fee_stats()`.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct FeeStats {
+    /// Rolling 24 h volume estimate (current + weighted previous window).
+    pub volume_24h: i128,
+    /// Cumulative token-A fees collected since deployment.
+    pub fees_collected_0: i128,
+    /// Cumulative token-B fees collected since deployment.
+    pub fees_collected_1: i128,
+    /// Current dynamic fee in basis points.
+    pub fee_bps: u32,
+}
+
 /// Storage keys for all persistent contract state.
 #[contracttype]
 pub enum DataKey {
@@ -52,6 +88,8 @@ pub enum DataKey {
     Guard,
     /// Oracle ring buffer.
     OracleState,
+    /// Fee / volume statistics.
+    FeeStatsState,
 }
 
 // ---------------------------------------------------------------------------
@@ -102,4 +140,22 @@ pub fn get_reentrancy_guard(env: &Env) -> ReentrancyGuard {
 
 pub fn set_reentrancy_guard(env: &Env, guard: &ReentrancyGuard) {
     env.storage().instance().set(&DataKey::Guard, guard);
+}
+
+// ---------------------------------------------------------------------------
+// FeeStatsState helpers
+// ---------------------------------------------------------------------------
+
+pub fn get_fee_stats_state(env: &Env) -> FeeStatsState {
+    env.storage().instance().get(&DataKey::FeeStatsState).unwrap_or(FeeStatsState {
+        fees_collected_0: 0,
+        fees_collected_1: 0,
+        window_start: 0,
+        volume_current: 0,
+        volume_previous: 0,
+    })
+}
+
+pub fn set_fee_stats_state(env: &Env, state: &FeeStatsState) {
+    env.storage().instance().set(&DataKey::FeeStatsState, state);
 }

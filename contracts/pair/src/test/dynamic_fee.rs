@@ -595,7 +595,8 @@ fn test_swap_updates_volatility_accumulator() {
         &String::from_str(&env, "CLP"),
     );
 
-    pair_client.initialize(&factory, &token_a_id, &token_b_id, &lp_id);
+    let pair_admin = Address::generate(&env);
+    pair_client.initialize(&factory, &token_a_id, &token_b_id, &lp_id, &30u32, &pair_admin);
 
     // Mint tokens to user
     let user = Address::generate(&env);
@@ -687,7 +688,8 @@ fn test_multiple_swaps_accumulate_volatility() {
         &String::from_str(&env, "CLP"),
     );
 
-    pair_client.initialize(&factory, &token_a_id, &token_b_id, &lp_id);
+    let pair_admin = Address::generate(&env);
+    pair_client.initialize(&factory, &token_a_id, &token_b_id, &lp_id, &30u32, &pair_admin);
 
     // Mint tokens to user
     let user = Address::generate(&env);

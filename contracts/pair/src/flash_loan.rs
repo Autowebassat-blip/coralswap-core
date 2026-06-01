@@ -107,6 +107,10 @@ pub fn execute_flash_loan(
 
     let mut state = get_pair_state(env).ok_or(PairError::NotInitialized)?;
 
+    if state.paused {
+        return Err(PairError::Paused);
+    }
+
     // Requested amounts must not exceed current reserves.
     if amount_a > state.reserve_a || amount_b > state.reserve_b {
         return Err(PairError::InsufficientLiquidity);

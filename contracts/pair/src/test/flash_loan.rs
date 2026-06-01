@@ -75,7 +75,8 @@ impl<'a> Setup<'a> {
         let factory = Address::generate(&env);
         let lp_token = Address::generate(&env); // Fake LP for now, maybe we need a real one
 
-        pair_client.initialize(&factory, &token_a, &token_b, &lp_token);
+        let pair_admin = Address::generate(&env);
+        pair_client.initialize(&factory, &token_a, &token_b, &lp_token, &30u32, &pair_admin);
 
         Setup {
             env,

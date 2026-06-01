@@ -1,13 +1,32 @@
 #![allow(dead_code)]
 
 use crate::errors::RouterError;
-use soroban_sdk::{contractclient, Address, Env};
+use soroban_sdk::{contractclient, contracttype, Address, Env};
+
+/// Fee tier enum — must match variant order in coralswap-factory's FeeTier.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FeeTier {
+    Low,
+    Standard,
+    High,
+}
+
+impl FeeTier {
+    pub fn fee_bps(&self) -> u32 {
+        match self {
+            FeeTier::Low => 5,
+            FeeTier::Standard => 30,
+            FeeTier::High => 100,
+        }
+    }
+}
 
 #[contractclient(name = "FactoryClient")]
 #[allow(dead_code)]
 pub trait FactoryInterface {
-    fn get_pair(env: Env, token_a: Address, token_b: Address) -> Option<Address>;
-    fn create_pair(env: Env, token_a: Address, token_b: Address) -> Address;
+    fn get_pair(env: Env, token_a: Address, token_b: Address, fee_tier: FeeTier) -> Option<Address>;
+    fn create_pair(env: Env, token_a: Address, token_b: Address, fee_tier: FeeTier) -> Address;
 }
 
 #[contractclient(name = "PairClient")]
@@ -171,13 +190,14 @@ pub fn compute_optimal_amounts(
     }
 }
 
-/// Retrieves pair address from factory.
+/// Retrieves pair address from factory for a specific fee tier.
 pub fn get_pair_address(
     env: &Env,
     factory: &Address,
     token_a: &Address,
     token_b: &Address,
+    fee_tier: FeeTier,
 ) -> Result<Address, RouterError> {
     let factory_client = FactoryClient::new(env, factory);
-    factory_client.get_pair(token_a, token_b).ok_or(RouterError::PairNotFound)
+    factory_client.get_pair(token_a, token_b, &fee_tier).ok_or(RouterError::PairNotFound)
 }

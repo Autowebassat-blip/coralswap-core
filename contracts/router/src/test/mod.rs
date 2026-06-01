@@ -495,3 +495,260 @@ fn test_swap_exact_out_invalid_path() {
     }));
     assert!(result.is_err(), "too-short path must fail");
 }
+
+// ===================== swap_exact_tokens_for_tokens integration =====================
+
+/// Helper: deploy router + factory, register a real token, fund `user`, and set up a mock pair.
+/// Returns (router_id, factory_id, token_addr, pair_id).
+fn setup_swap_env(
+    env: &Env,
+    reserve_a: i128,
+    reserve_b: i128,
+) -> (Address, Address, Address, Address, Address) {
+    use soroban_sdk::token::StellarAssetClient;
+
+    let (router_id, factory_id) = deploy_router(env);
+
+    let admin = Address::generate(env);
+    let token_a_id = env.register_stellar_asset_contract(admin.clone());
+    let token_b_id = env.register_stellar_asset_contract(admin.clone());
+
+    // Ensure canonical order so pair lookup is consistent
+    let (token_a_id, token_b_id) = if token_a_id < token_b_id {
+        (token_a_id, token_b_id)
+    } else {
+        (token_b_id, token_a_id)
+    };
+
+    let pair_id = setup_pair(env, &factory_id, &token_a_id, &token_b_id, reserve_a, reserve_b);
+
+    (router_id, factory_id, token_a_id, token_b_id, pair_id)
+}
+
+#[test]
+fn test_swap_exact_tokens_for_tokens_single_hop_amounts_array() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (router_id, _factory_id, token_a, token_b, _pair_id) =
+        setup_swap_env(&env, 100_000, 100_000);
+    let router = RouterClient::new(&env, &router_id);
+
+    let user = Address::generate(&env);
+    use soroban_sdk::token::StellarAssetClient;
+    StellarAssetClient::new(&env, &token_a).mint(&user, &10_000);
+
+    let mut path: Vec<Address> = Vec::new(&env);
+    path.push_back(token_a.clone());
+    path.push_back(token_b.clone());
+
+    let amount_in = 1_000i128;
+    let amounts = router.swap_exact_tokens_for_tokens(
+        &amount_in,
+        &1,
+        &path,
+        &user,
+        &u64::MAX,
+    );
+
+    // Full amounts array: [amount_in, amount_out]
+    assert_eq!(amounts.len(), 2, "single-hop must return 2-element amounts array");
+    assert_eq!(amounts.get(0).unwrap(), amount_in, "first element must be amount_in");
+    let amount_out = amounts.get(1).unwrap();
+    assert!(amount_out > 0, "output must be positive");
+    assert!(amount_out < amount_in, "output must be less than input due to fee");
+}
+
+#[test]
+fn test_swap_exact_tokens_for_tokens_two_hop_amounts_array() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (router_id, factory_id) = deploy_router(&env);
+
+    let admin = Address::generate(&env);
+    use soroban_sdk::token::StellarAssetClient;
+    let token_a_id = env.register_stellar_asset_contract(admin.clone());
+    let token_b_id = env.register_stellar_asset_contract(admin.clone());
+    let token_c_id = env.register_stellar_asset_contract(admin.clone());
+
+    // Sort tokens for consistent pair lookup
+    let mut tokens = [token_a_id.clone(), token_b_id.clone(), token_c_id.clone()];
+    tokens.sort();
+    let [token_a, token_b, token_c] = tokens;
+
+    setup_pair(&env, &factory_id, &token_a, &token_b, 100_000, 100_000);
+    setup_pair(&env, &factory_id, &token_b, &token_c, 100_000, 100_000);
+
+    let user = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_a).mint(&user, &10_000);
+    // Router needs token_b to forward intermediate hop
+    StellarAssetClient::new(&env, &token_b).mint(&router_id, &10_000);
+
+    let mut path: Vec<Address> = Vec::new(&env);
+    path.push_back(token_a.clone());
+    path.push_back(token_b.clone());
+    path.push_back(token_c.clone());
+
+    let amount_in = 1_000i128;
+    let amounts = RouterClient::new(&env, &router_id).swap_exact_tokens_for_tokens(
+        &amount_in,
+        &1,
+        &path,
+        &user,
+        &u64::MAX,
+    );
+
+    // Full amounts array: [amount_in, mid_out, final_out]
+    assert_eq!(amounts.len(), 3, "two-hop must return 3-element amounts array");
+    assert_eq!(amounts.get(0).unwrap(), amount_in);
+    let mid_out = amounts.get(1).unwrap();
+    let final_out = amounts.get(2).unwrap();
+    assert!(mid_out > 0, "intermediate output must be positive");
+    assert!(final_out > 0, "final output must be positive");
+    assert!(final_out < mid_out, "second hop reduces output");
+}
+
+#[test]
+fn test_swap_exact_tokens_for_tokens_slippage_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (router_id, _factory_id, token_a, token_b, _pair_id) =
+        setup_swap_env(&env, 100_000, 100_000);
+    let router = RouterClient::new(&env, &router_id);
+
+    let user = Address::generate(&env);
+    use soroban_sdk::token::StellarAssetClient;
+    StellarAssetClient::new(&env, &token_a).mint(&user, &10_000);
+
+    let mut path: Vec<Address> = Vec::new(&env);
+    path.push_back(token_a.clone());
+    path.push_back(token_b.clone());
+
+    // Set amount_out_min impossibly high
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        router.swap_exact_tokens_for_tokens(
+            &1_000,
+            &999_999_999,
+            &path,
+            &user,
+            &u64::MAX,
+        );
+    }));
+    assert!(result.is_err(), "slippage check must reject when output < amount_out_min");
+}
+
+// ===================== swap_tokens_for_exact_tokens integration =====================
+
+#[test]
+fn test_swap_tokens_for_exact_tokens_single_hop_amounts_array() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (router_id, _factory_id, token_a, token_b, _pair_id) =
+        setup_swap_env(&env, 100_000, 100_000);
+    let router = RouterClient::new(&env, &router_id);
+
+    let user = Address::generate(&env);
+    use soroban_sdk::token::StellarAssetClient;
+    StellarAssetClient::new(&env, &token_a).mint(&user, &10_000);
+
+    let mut path: Vec<Address> = Vec::new(&env);
+    path.push_back(token_a.clone());
+    path.push_back(token_b.clone());
+
+    let amount_out = 900i128;
+    let amounts = router.swap_tokens_for_exact_tokens(
+        &amount_out,
+        &10_000,
+        &path,
+        &user,
+        &u64::MAX,
+    );
+
+    // Full amounts array: [amount_in, amount_out]
+    assert_eq!(amounts.len(), 2, "single-hop must return 2-element amounts array");
+    let amount_in = amounts.get(0).unwrap();
+    assert!(amount_in > 0, "required input must be positive");
+    assert!(amount_in <= 10_000, "required input must be within max");
+    assert_eq!(amounts.get(1).unwrap(), amount_out, "last element must be exact amount_out");
+}
+
+#[test]
+fn test_swap_tokens_for_exact_tokens_two_hop_amounts_array() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (router_id, factory_id) = deploy_router(&env);
+
+    let admin = Address::generate(&env);
+    use soroban_sdk::token::StellarAssetClient;
+    let token_a_id = env.register_stellar_asset_contract(admin.clone());
+    let token_b_id = env.register_stellar_asset_contract(admin.clone());
+    let token_c_id = env.register_stellar_asset_contract(admin.clone());
+
+    let mut tokens = [token_a_id.clone(), token_b_id.clone(), token_c_id.clone()];
+    tokens.sort();
+    let [token_a, token_b, token_c] = tokens;
+
+    setup_pair(&env, &factory_id, &token_a, &token_b, 100_000, 100_000);
+    setup_pair(&env, &factory_id, &token_b, &token_c, 100_000, 100_000);
+
+    let user = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_a).mint(&user, &10_000);
+    StellarAssetClient::new(&env, &token_b).mint(&router_id, &10_000);
+
+    let mut path: Vec<Address> = Vec::new(&env);
+    path.push_back(token_a.clone());
+    path.push_back(token_b.clone());
+    path.push_back(token_c.clone());
+
+    let amount_out = 500i128;
+    let amounts = RouterClient::new(&env, &router_id).swap_tokens_for_exact_tokens(
+        &amount_out,
+        &10_000,
+        &path,
+        &user,
+        &u64::MAX,
+    );
+
+    // Full amounts array: [amount_in, mid_out, amount_out]
+    assert_eq!(amounts.len(), 3, "two-hop must return 3-element amounts array");
+    let amount_in = amounts.get(0).unwrap();
+    let mid_out = amounts.get(1).unwrap();
+    assert!(amount_in > 0);
+    assert!(mid_out > 0);
+    assert_eq!(amounts.get(2).unwrap(), amount_out);
+    assert!(amount_in <= 10_000, "required input must be within max");
+}
+
+#[test]
+fn test_swap_tokens_for_exact_tokens_slippage_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (router_id, _factory_id, token_a, token_b, _pair_id) =
+        setup_swap_env(&env, 100_000, 100_000);
+    let router = RouterClient::new(&env, &router_id);
+
+    let user = Address::generate(&env);
+    use soroban_sdk::token::StellarAssetClient;
+    StellarAssetClient::new(&env, &token_a).mint(&user, &10_000);
+
+    let mut path: Vec<Address> = Vec::new(&env);
+    path.push_back(token_a.clone());
+    path.push_back(token_b.clone());
+
+    // Set amount_in_max impossibly low (1 token can't buy 900 out)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        router.swap_tokens_for_exact_tokens(
+            &900,
+            &1,
+            &path,
+            &user,
+            &u64::MAX,
+        );
+    }));
+    assert!(result.is_err(), "slippage check must reject when required input > amount_in_max");
+}

@@ -5,6 +5,7 @@ extern crate std;
 
 mod errors;
 mod helpers;
+mod price_guard;
 mod storage;
 
 #[cfg(test)]
@@ -12,8 +13,11 @@ mod test;
 
 use errors::RouterError;
 use helpers::{compute_optimal_amounts, get_pair_address, PairClient};
-use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, Vec};
-use storage::{get_factory, set_factory};
+use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Bytes, Env, Vec};
+use storage::{
+    get_admin, get_factory, get_price_guard_config, set_admin, set_factory,
+    set_price_guard_config, PriceGuardConfig,
+};
 
 #[contract]
 pub struct Router;
@@ -22,6 +26,132 @@ pub struct Router;
 impl Router {
     pub fn initialize(env: Env, factory: Address) {
         set_factory(&env, &factory);
+    }
+
+    /// Initializes the Router with a factory and an explicit admin address.
+    pub fn initialize_with_admin(env: Env, factory: Address, admin: Address) {
+        set_factory(&env, &factory);
+        set_admin(&env, &admin);
+    }
+
+    /// Updates the price guard configuration. Only callable by the admin.
+    pub fn set_price_guard_config(
+        env: Env,
+        min_guarded_amount: i128,
+        max_deviation_bps: u32,
+    ) -> Result<(), RouterError> {
+        let admin = get_admin(&env).ok_or(RouterError::Unauthorized)?;
+        admin.require_auth();
+        set_price_guard_config(
+            &env,
+            &PriceGuardConfig { min_guarded_amount, max_deviation_bps },
+        );
+        Ok(())
+    }
+
+    /// Swaps an exact `amount_in` of `path[0]` for at least `min_out` of `path[1]`,
+    /// with an optional RedStone oracle price guard.
+    ///
+    /// If `redstone_payload` is `Some` **and** `amount_in >= config.min_guarded_amount`,
+    /// the payload is validated for freshness and the execution price is checked against
+    /// the oracle price. The payload encodes `(price_scaled: u128, timestamp: u64)` in
+    /// 24 big-endian bytes (see `price_guard::PAYLOAD_LEN`).
+    ///
+    /// Reverts with:
+    /// - `RouterError::StaleOraclePayload`       — payload older than 5 minutes
+    /// - `RouterError::PriceDeviationTooHigh`    — execution price deviates > max_deviation_bps
+    /// - `RouterError::Expired`                  — deadline passed
+    /// - `RouterError::InsufficientOutputAmount` — amount_out < min_out
+    pub fn swap_with_price_guard(
+        env: Env,
+        amount_in: i128,
+        min_out: i128,
+        path: Vec<Address>,
+        to: Address,
+        deadline: u64,
+        redstone_payload: Option<Bytes>,
+    ) -> Result<i128, RouterError> {
+        // ── 1. Deadline ───────────────────────────────────────────────────────
+        if deadline < env.ledger().timestamp() {
+            return Err(RouterError::Expired);
+        }
+        if amount_in <= 0 {
+            return Err(RouterError::ZeroAmount);
+        }
+        if path.len() < 2 {
+            return Err(RouterError::InvalidPath);
+        }
+
+        let token_in = path.get(0).ok_or(RouterError::InvalidPath)?;
+        let token_out = path.get(1).ok_or(RouterError::InvalidPath)?;
+
+        if token_in == token_out {
+            return Err(RouterError::IdenticalTokens);
+        }
+
+        // ── 2. Fetch pair and reserves ────────────────────────────────────────
+        let factory = get_factory(&env).ok_or(RouterError::PairNotFound)?;
+        let pair_addr = get_pair_address(&env, &factory, &token_in, &token_out)?;
+        let pair_client = PairClient::new(&env, &pair_addr);
+        let (reserve_a, reserve_b, _) = pair_client.get_reserves();
+        let fee_bps = pair_client.get_current_fee_bps();
+
+        // Determine which reserve is in/out based on token sort order.
+        let (reserve_in, reserve_out) = if token_in < token_out {
+            (reserve_a, reserve_b)
+        } else {
+            (reserve_b, reserve_a)
+        };
+
+        if reserve_in <= 0 || reserve_out <= 0 {
+            return Err(RouterError::InsufficientLiquidity);
+        }
+
+        // ── 3. Compute amount_out ─────────────────────────────────────────────
+        let amount_out =
+            helpers::get_amount_out(&env, amount_in, reserve_in, reserve_out, fee_bps)?;
+
+        if amount_out < min_out {
+            return Err(RouterError::InsufficientOutputAmount);
+        }
+
+        // ── 4. Oracle price guard ─────────────────────────────────────────────
+        let config = get_price_guard_config(&env);
+        let guarded = config
+            .as_ref()
+            .map(|c| amount_in >= c.min_guarded_amount)
+            .unwrap_or(false);
+
+        if guarded {
+            let payload = redstone_payload.ok_or(RouterError::InvalidOraclePayload)?;
+            let cfg = config.unwrap(); // safe: guarded == true implies config is Some
+
+            let (oracle_price_scaled, payload_ts) = price_guard::parse_payload(&payload)?;
+            price_guard::check_freshness(&env, payload_ts)?;
+
+            // Execution price: amount_out / amount_in, scaled to 10^8.
+            let exec_price_scaled =
+                ((amount_out as u128) * 100_000_000) / (amount_in as u128);
+
+            price_guard::check_deviation(
+                exec_price_scaled,
+                oracle_price_scaled,
+                cfg.max_deviation_bps,
+            )?;
+        }
+
+        // ── 5. Execute swap ───────────────────────────────────────────────────
+        to.require_auth();
+        TokenClient::new(&env, &token_in).transfer(&to, &pair_addr, &amount_in);
+
+        let (amount_a_out, amount_b_out) = if token_in < token_out {
+            (0_i128, amount_out)
+        } else {
+            (amount_out, 0_i128)
+        };
+        pair_client.swap(&amount_a_out, &amount_b_out, &to);
+
+        Ok(amount_out)
     }
     pub fn swap_exact_tokens_for_tokens(
         _env: Env,

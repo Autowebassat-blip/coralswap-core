@@ -7,6 +7,8 @@ use soroban_sdk::{
     Address, Env,
 };
 
+mod price_guard;
+
 // ── Mock Contracts ────────────────────────────────────────────────────────────
 
 /// Minimal mock factory that stores and returns a pair address.
@@ -57,6 +59,10 @@ pub enum MPKey {
     ReserveA,
     ReserveB,
     MintReturn,
+    FeeBps,
+    BurnAmountA,
+    BurnAmountB,
+    LiquidityToMint,
 }
 
 #[contractimpl]
@@ -79,6 +85,10 @@ impl MockPair {
         env.storage().instance().set(&MPKey::LiquidityToMint, &liquidity);
     }
 
+    pub fn set_fee_bps(env: Env, fee_bps: u32) {
+        env.storage().instance().set(&MPKey::FeeBps, &fee_bps);
+    }
+
     pub fn lp_token(env: Env) -> Address {
         env.storage().instance().get(&MPKey::LpToken).unwrap()
     }
@@ -87,11 +97,6 @@ impl MockPair {
         let a: i128 = env.storage().instance().get(&MPKey::BurnAmountA).unwrap_or(0);
         let b: i128 = env.storage().instance().get(&MPKey::BurnAmountB).unwrap_or(0);
         (a, b)
-    }
-
-    pub fn set_reserves(env: Env, reserve_a: i128, reserve_b: i128) {
-        env.storage().instance().set(&MPKey::ReserveA, &reserve_a);
-        env.storage().instance().set(&MPKey::ReserveB, &reserve_b);
     }
 
     pub fn set_mint_return(env: Env, liquidity: i128) {
@@ -104,9 +109,15 @@ impl MockPair {
         (ra, rb, 0u64)
     }
 
+    pub fn get_current_fee_bps(env: Env) -> u32 {
+        env.storage().instance().get(&MPKey::FeeBps).unwrap_or(30)
+    }
+
     pub fn mint(env: Env, _to: Address) -> i128 {
         env.storage().instance().get(&MPKey::MintReturn).unwrap_or(0)
     }
+
+    pub fn swap(_env: Env, _amount_a_out: i128, _amount_b_out: i128, _to: Address) {}
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

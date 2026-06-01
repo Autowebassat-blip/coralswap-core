@@ -14,4 +14,9 @@ pub enum RouterError {
     InsufficientLiquidity = 307,
     SlippageExceeded = 308,
     InternalError = 309,
+    // Price guard errors
+    PriceDeviationTooHigh = 310,
+    StaleOraclePayload = 311,
+    InvalidOraclePayload = 312,
+    Unauthorized = 313,
 }

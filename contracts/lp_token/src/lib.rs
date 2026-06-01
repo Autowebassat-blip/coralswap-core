@@ -41,7 +41,90 @@ impl LpToken {
         // Initialize total supply to 0
         env.storage().instance().set(&LpTokenKey::TotalSupply, &0i128);
 
+        // Initialize paused state to false
+        env.storage().instance().set(&LpTokenKey::Paused, &false);
+
         Ok(())
+    }
+
+    /// Transfer admin role to a new address
+    /// Only callable by current admin
+    pub fn admin_transfer(env: Env, new_admin: Address) -> Result<(), LpTokenError> {
+        // Get current admin and require authorization
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&LpTokenKey::Admin)
+            .ok_or(LpTokenError::NotInitialized)?;
+        
+        old_admin.require_auth();
+
+        // Atomically update admin
+        env.storage().instance().set(&LpTokenKey::Admin, &new_admin);
+
+        // Emit AdminTransferred event
+        env.events().publish(
+            (soroban_sdk::symbol_short!("adm_xfer"), old_admin, new_admin),
+            (),
+        );
+
+        Ok(())
+    }
+
+    /// Pause the contract - blocks all token operations
+    /// Only callable by admin
+    pub fn pause(env: Env) -> Result<(), LpTokenError> {
+        // Get admin and require authorization
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&LpTokenKey::Admin)
+            .ok_or(LpTokenError::NotInitialized)?;
+        
+        admin.require_auth();
+
+        // Set paused state
+        env.storage().instance().set(&LpTokenKey::Paused, &true);
+
+        // Emit Paused event
+        env.events().publish(
+            (soroban_sdk::symbol_short!("paused"), admin),
+            (),
+        );
+
+        Ok(())
+    }
+
+    /// Unpause the contract - restores token operations
+    /// Only callable by admin
+    pub fn unpause(env: Env) -> Result<(), LpTokenError> {
+        // Get admin and require authorization
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&LpTokenKey::Admin)
+            .ok_or(LpTokenError::NotInitialized)?;
+        
+        admin.require_auth();
+
+        // Set paused state
+        env.storage().instance().set(&LpTokenKey::Paused, &false);
+
+        // Emit Unpaused event
+        env.events().publish(
+            (soroban_sdk::symbol_short!("unpaused"), admin),
+            (),
+        );
+
+        Ok(())
+    }
+
+    /// Check if contract is paused
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&LpTokenKey::Paused)
+            .unwrap_or(false)
     }
 
     /// Get the allowance for spender to transfer from `from`
@@ -115,6 +198,11 @@ impl LpToken {
         to: Address,
         amount: i128,
     ) -> Result<(), LpTokenError> {
+        // Check if paused
+        if Self::is_paused(env.clone()) {
+            return Err(LpTokenError::ContractPaused);
+        }
+
         // Require authorization from the `from` address
         from.require_auth();
 
@@ -133,6 +221,11 @@ impl LpToken {
         to: Address,
         amount: i128,
     ) -> Result<(), LpTokenError> {
+        // Check if paused
+        if Self::is_paused(env.clone()) {
+            return Err(LpTokenError::ContractPaused);
+        }
+
         // Require authorization from the spender
         spender.require_auth();
 
@@ -148,6 +241,11 @@ impl LpToken {
     /// Mint new tokens to an address
     /// Only callable by admin (pair contract)
     pub fn mint(env: Env, to: Address, amount: i128) -> Result<(), LpTokenError> {
+        // Check if paused
+        if Self::is_paused(env.clone()) {
+            return Err(LpTokenError::ContractPaused);
+        }
+
         // Get admin and require authorization
         let admin: Address =
             env.storage().instance().get(&LpTokenKey::Admin).ok_or(LpTokenError::NotInitialized)?;
@@ -158,7 +256,7 @@ impl LpToken {
         let balance_key = LpTokenKey::Balance(to.clone());
         let current_balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
         let new_balance = current_balance.checked_add(amount).ok_or(LpTokenError::Overflow)?;
-        env.storage().persistent().set(&balance_key, &new_balance);
+        Self::write_balance(env.storage(), &balance_key, new_balance);
 
         // Increase total supply
         let total_supply: i128 =
@@ -175,6 +273,11 @@ impl LpToken {
     /// Burn tokens from an address
     /// Requires authorization from `from`
     pub fn burn(env: Env, from: Address, amount: i128) -> Result<(), LpTokenError> {
+        // Check if paused
+        if Self::is_paused(env.clone()) {
+            return Err(LpTokenError::ContractPaused);
+        }
+
         // Require authorization from the `from` address
         from.require_auth();
 
@@ -187,16 +290,13 @@ impl LpToken {
         }
 
         let new_balance = current_balance - amount;
-        if new_balance == 0 {
-            env.storage().persistent().remove(&balance_key);
-        } else {
-            env.storage().persistent().set(&balance_key, &new_balance);
-        }
+        Self::write_balance(env.storage(), &balance_key, new_balance);
 
         // Decrease total supply
         let total_supply: i128 =
             env.storage().instance().get(&LpTokenKey::TotalSupply).unwrap_or(0);
-        let new_total_supply = total_supply - amount;
+        let new_total_supply =
+            total_supply.checked_sub(amount).ok_or(LpTokenError::InsufficientBalance)?;
         env.storage().instance().set(&LpTokenKey::TotalSupply, &new_total_supply);
 
         // Emit burn event
@@ -206,24 +306,33 @@ impl LpToken {
     }
 
     /// Get the number of decimals
-    pub fn decimals(env: Env) -> u32 {
-        let metadata: TokenMetadata =
-            env.storage().instance().get(&LpTokenKey::Metadata).expect("Token not initialized");
-        metadata.decimals
+    pub fn decimals(env: Env) -> Result<u32, LpTokenError> {
+        let metadata: TokenMetadata = env
+            .storage()
+            .instance()
+            .get(&LpTokenKey::Metadata)
+            .ok_or(LpTokenError::NotInitialized)?;
+        Ok(metadata.decimals)
     }
 
     /// Get the token name
-    pub fn name(env: Env) -> String {
-        let metadata: TokenMetadata =
-            env.storage().instance().get(&LpTokenKey::Metadata).expect("Token not initialized");
-        metadata.name
+    pub fn name(env: Env) -> Result<String, LpTokenError> {
+        let metadata: TokenMetadata = env
+            .storage()
+            .instance()
+            .get(&LpTokenKey::Metadata)
+            .ok_or(LpTokenError::NotInitialized)?;
+        Ok(metadata.name)
     }
 
     /// Get the token symbol
-    pub fn symbol(env: Env) -> String {
-        let metadata: TokenMetadata =
-            env.storage().instance().get(&LpTokenKey::Metadata).expect("Token not initialized");
-        metadata.symbol
+    pub fn symbol(env: Env) -> Result<String, LpTokenError> {
+        let metadata: TokenMetadata = env
+            .storage()
+            .instance()
+            .get(&LpTokenKey::Metadata)
+            .ok_or(LpTokenError::NotInitialized)?;
+        Ok(metadata.symbol)
     }
 
     /// Get the total supply
@@ -257,17 +366,13 @@ impl LpToken {
         }
 
         let new_from_balance = from_balance - amount;
-        if new_from_balance == 0 {
-            env.storage().persistent().remove(&from_key);
-        } else {
-            env.storage().persistent().set(&from_key, &new_from_balance);
-        }
+        Self::write_balance(env.storage(), &from_key, new_from_balance);
 
         // Credit to receiver
         let to_key = LpTokenKey::Balance(to.clone());
         let to_balance: i128 = env.storage().persistent().get(&to_key).unwrap_or(0);
         let new_to_balance = to_balance.checked_add(amount).ok_or(LpTokenError::Overflow)?;
-        env.storage().persistent().set(&to_key, &new_to_balance);
+        Self::write_balance(env.storage(), &to_key, new_to_balance);
 
         // Emit transfer event
         env.events()
@@ -311,6 +416,14 @@ impl LpToken {
         }
 
         Ok(())
+    }
+
+    fn write_balance(storage: soroban_sdk::storage::Storage, key: &LpTokenKey, balance: i128) {
+        if balance == 0 {
+            storage.persistent().remove(key);
+        } else {
+            storage.persistent().set(key, &balance);
+        }
     }
 }
 

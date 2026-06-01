@@ -49,6 +49,7 @@ impl PairEvents {
     ///
     /// "flash_loan" = 10 chars → exceeds the 9-char symbol_short! limit,
     /// so we use Symbol::new for a runtime allocation.
+    #[allow(dead_code)]
     pub fn flash_loan(
         env: &Env,
         receiver: &Address,
@@ -56,10 +57,11 @@ impl PairEvents {
         amount_b: i128,
         fee_a: i128,
         fee_b: i128,
+        fee_bps: u32,
     ) {
         env.events().publish(
             (Symbol::new(env, "flash_loan"), receiver.clone()),
-            (amount_a, amount_b, fee_a, fee_b),
+            (amount_a, amount_b, fee_a, fee_b, fee_bps),
         );
     }
 }

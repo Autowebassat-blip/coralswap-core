@@ -60,6 +60,7 @@ impl Factory {
             paused: false,
             fee_to: None,
             fee_to_setter,
+            fee_bps: 0,
         };
 
         storage::set_factory_storage(&env, &factory_storage);
@@ -114,22 +115,28 @@ impl Factory {
             .with_current_contract(lp_salt)
             .deploy(factory_storage.lp_token_wasm_hash.clone());
 
-        // 3. Initialize Pair
+        // 3. Initialize Pair — propagate any error; do NOT store if this fails
         let pair_client = PairClient::new(&env, &pair_address);
-        pair_client.initialize(
-            &env.current_contract_address(),
-            &token_0,
-            &token_1,
-            &lp_token_address,
-        );
+        let _ = pair_client
+            .try_initialize(
+                &env.current_contract_address(),
+                &token_0,
+                &token_1,
+                &lp_token_address,
+            )
+            .map_err(|_| FactoryError::NotInitialized)?;
 
-        // 4. Store pair
+        // 4. Store pair — only reached when initialize() succeeded
         storage::set_pair(&env, token_0.clone(), token_1.clone(), pair_address.clone());
         storage::set_pair(&env, token_1.clone(), token_0.clone(), pair_address.clone());
 
         let pair_index = factory_storage.pair_count;
         factory_storage.pair_count += 1;
         storage::set_factory_storage(&env, &factory_storage);
+
+        let mut pair_list = storage::get_pair_list(&env);
+        pair_list.push_back(pair_address.clone());
+        storage::set_pair_list(&env, &pair_list);
 
         // 5. Emit event
         events::FactoryEvents::pair_created(&env, &token_0, &token_1, &pair_address, pair_index);
@@ -141,18 +148,72 @@ impl Factory {
         storage::get_pair(&env, token_a, token_b)
     }
 
-    pub fn pause(env: Env, _signers: Vec<Address>) -> Result<(), FactoryError> {
+    pub fn get_all_pairs(env: Env, offset: u32, limit: u32) -> Result<Vec<Address>, FactoryError> {
+        if limit > 50 {
+            return Err(FactoryError::LimitTooHigh);
+        }
+        let pair_list = storage::get_pair_list(&env);
+        let mut result = Vec::new(&env);
+        let total = pair_list.len();
+        
+        let start = offset;
+        let end = (offset + limit).min(total);
+        if start < total {
+            for i in start..end {
+                result.push_back(pair_list.get(i).unwrap());
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn get_pair_count(env: Env) -> u32 {
+        let storage = storage::get_factory_storage(&env);
+        storage.map(|s| s.pair_count).unwrap_or(0)
+    }
+
+    pub fn pause(env: Env, signers: Vec<Address>) -> Result<(), FactoryError> {
+        let mut factory_storage =
+            storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
+
+        // Require a majority (threshold = ceil(n/2)) of the registered signers.
+        let threshold = (factory_storage.signers.len() + 1) / 2;
+        governance::verify_multisig(&env, &signers, threshold)?;
+
+        factory_storage.paused = true;
+        storage::set_factory_storage(&env, &factory_storage);
         let mut storage = storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
-        // TODO: Auth check for signers
+
+        // Find a signer in the call that matches a stored signer, then require its auth.
+        let authorized = signers
+            .iter()
+            .find(|s| storage.signers.contains(s))
+            .ok_or(FactoryError::Unauthorized)?;
+        authorized.require_auth();
+
         storage.paused = true;
         storage::set_factory_storage(&env, &storage);
         events::FactoryEvents::paused(&env);
         Ok(())
     }
 
-    pub fn unpause(env: Env, _signers: Vec<Address>) -> Result<(), FactoryError> {
+    pub fn unpause(env: Env, signers: Vec<Address>) -> Result<(), FactoryError> {
+        let mut factory_storage =
+            storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
+
+        let threshold = (factory_storage.signers.len() + 1) / 2;
+        governance::verify_multisig(&env, &signers, threshold)?;
+
+        factory_storage.paused = false;
+        storage::set_factory_storage(&env, &factory_storage);
         let mut storage = storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
-        // TODO: Auth check for signers
+
+        // Find a signer in the call that matches a stored signer, then require its auth.
+        let authorized = signers
+            .iter()
+            .find(|s| storage.signers.contains(s))
+            .ok_or(FactoryError::Unauthorized)?;
+        authorized.require_auth();
+
         storage.paused = false;
         storage::set_factory_storage(&env, &storage);
         events::FactoryEvents::unpaused(&env);
@@ -163,6 +224,7 @@ impl Factory {
         env: Env,
         setter: Address,
         fee_to: Option<Address>,
+        fee_bps: u32,
     ) -> Result<(), FactoryError> {
         let mut storage = storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
 
@@ -172,10 +234,21 @@ impl Factory {
             return Err(FactoryError::Unauthorized);
         }
 
+        if fee_bps > 30 {
+            return Err(FactoryError::FeeTooHigh);
+        }
+
+        if fee_to.is_none() && fee_bps > 0 {
+            return Err(FactoryError::InvalidFeeRecipient);
+        }
+
+        let old_fee_bps = storage.fee_bps;
         storage.fee_to = fee_to.clone();
+        storage.fee_bps = fee_bps;
         storage::set_factory_storage(&env, &storage);
 
         events::FactoryEvents::fee_to_set(&env, &fee_to);
+        events::FactoryEvents::protocol_fee_updated(&env, old_fee_bps, fee_bps, &fee_to);
 
         Ok(())
     }
@@ -211,5 +284,35 @@ impl Factory {
 
     pub fn is_paused(env: Env) -> bool {
         storage::get_factory_storage(&env).map(|s| s.paused).unwrap_or(false)
+    }
+
+    /// Proposes a WASM upgrade. Gated by multisig (threshold = ceil(n/2)).
+    pub fn propose_upgrade(
+        env: Env,
+        signers: Vec<Address>,
+        new_wasm_hash: BytesN<32>,
+    ) -> Result<(), FactoryError> {
+        let factory_storage =
+            storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
+        let threshold = (factory_storage.signers.len() + 1) / 2;
+        governance::verify_multisig(&env, &signers, threshold)?;
+        upgrade::propose_upgrade(&env, new_wasm_hash)
+    }
+
+    /// Executes a pending upgrade after the 72-hour timelock has elapsed.
+    pub fn execute_upgrade(env: Env) -> Result<(), FactoryError> {
+        upgrade::execute_upgrade(&env)
+    }
+
+    /// Cancels a pending upgrade. Gated by multisig.
+    pub fn cancel_upgrade(
+        env: Env,
+        signers: Vec<Address>,
+    ) -> Result<(), FactoryError> {
+        let factory_storage =
+            storage::get_factory_storage(&env).ok_or(FactoryError::NotInitialized)?;
+        let threshold = (factory_storage.signers.len() + 1) / 2;
+        governance::verify_multisig(&env, &signers, threshold)?;
+        upgrade::cancel_upgrade(&env)
     }
 }

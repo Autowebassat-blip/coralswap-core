@@ -14,6 +14,7 @@ pub struct FactoryStorage {
     pub paused: bool,
     pub fee_to: Option<Address>,
     pub fee_to_setter: Address,
+    pub fee_bps: u32,
 }
 
 #[contracttype]
@@ -21,6 +22,35 @@ pub struct FactoryStorage {
 pub enum DataKey {
     Factory,
     Pair(Address, Address),
+    PendingUpgrade,
+    PairList,
+}
+
+pub fn get_pair_list(env: &Env) -> Vec<Address> {
+    env.storage().instance().get(&DataKey::PairList).unwrap_or(Vec::new(env))
+}
+
+pub fn set_pair_list(env: &Env, list: &Vec<Address>) {
+    env.storage().instance().set(&DataKey::PairList, list);
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PendingUpgrade {
+    pub new_wasm_hash: BytesN<32>,
+    pub proposed_at_ledger: u32,
+}
+
+pub fn get_pending_upgrade(env: &Env) -> Option<PendingUpgrade> {
+    env.storage().instance().get(&DataKey::PendingUpgrade)
+}
+
+pub fn set_pending_upgrade(env: &Env, proposal: &PendingUpgrade) {
+    env.storage().instance().set(&DataKey::PendingUpgrade, proposal);
+}
+
+pub fn remove_pending_upgrade(env: &Env) {
+    env.storage().instance().remove(&DataKey::PendingUpgrade);
 }
 
 pub fn get_factory_storage(env: &Env) -> Option<FactoryStorage> {
@@ -48,12 +78,4 @@ pub fn has_factory_storage(env: &Env) -> bool {
 /// Extend instance storage TTL to keep contract alive.
 pub fn extend_instance_ttl(env: &Env) {
     env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-}
-
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct TimelockedAction {
-    pub proposed_at: u64,
-    pub delay_seconds: u64,
-    pub action_id: u32,
 }

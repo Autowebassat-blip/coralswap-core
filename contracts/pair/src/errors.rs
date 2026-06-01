@@ -19,4 +19,16 @@ pub enum PairError {
     InsufficientLiquidityMinted = 112,
     InsufficientLiquidityBurned = 113,
     InvalidInput = 114,
+    InvalidEmaAlpha = 115,
+    FeeOverflow = 116,
+    FlashCallbackFailed = 117,
+    FlashLoanFeeTooHigh = 118,
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum OracleError {
+    WindowTooShort = 200,
+    WindowTooLong = 201,
 }

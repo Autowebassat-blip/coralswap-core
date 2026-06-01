@@ -12,3 +12,8 @@ resolver = "2"
 [workspace.dependencies]
 soroban-sdk = "=21.7.7"
 soroban-token-sdk = "=21.7.7"
+
+[profile.release]
+overflow-checks = true
+opt-level = "z"
+debug = false

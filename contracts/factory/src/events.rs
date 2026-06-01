@@ -42,4 +42,11 @@ impl FactoryEvents {
     pub fn fee_to_setter_set(env: &Env, new_setter: &Address) {
         env.events().publish((soroban_sdk::symbol_short!("setter"),), new_setter.clone());
     }
+
+    pub fn protocol_fee_updated(env: &Env, old_fee_bps: u32, new_fee_bps: u32, fee_to: &Option<Address>) {
+        env.events().publish(
+            (soroban_sdk::symbol_short!("fee_upd"),),
+            (old_fee_bps, new_fee_bps, fee_to.clone()),
+        );
+    }
 }

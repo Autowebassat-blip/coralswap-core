@@ -227,7 +227,8 @@ impl Router {
     }
 
     /// Swaps an exact amount of input tokens for a minimum amount of output
-    /// tokens along a given path. Supports 1, 2, or 3 hops.
+    /// tokens along a given path. Returns amounts for each hop.
+    /// Supports 1, 2, or 3 hops.
     pub fn swap_exact_tokens_for_tokens(
         env: Env,
         amount_in: i128,
@@ -236,16 +237,54 @@ impl Router {
         to: Address,
         deadline: u64,
     ) -> Result<Vec<i128>, RouterError> {
-        let final_out = Self::swap_exact_tokens_multi_hop(
-            env.clone(),
-            path,
-            amount_in,
-            amount_out_min,
-            to,
-            deadline,
-        )?;
-        let mut amounts = Vec::new(&env);
-        amounts.push_back(final_out);
+        if deadline < env.ledger().timestamp() {
+            return Err(RouterError::Expired);
+        }
+        if amount_in <= 0 {
+            return Err(RouterError::ZeroAmount);
+        }
+        let hops = path.len() - 1;
+        if !(1..=3).contains(&hops) {
+            return Err(RouterError::InvalidPath);
+        }
+
+        let factory = get_factory(&env).ok_or(RouterError::PairNotFound)?;
+        let amounts = get_path_amounts_out(&env, &factory, &path, amount_in)?;
+        let final_out = amounts.get(amounts.len() - 1).unwrap();
+
+        if final_out < amount_out_min {
+            return Err(RouterError::InsufficientOutputAmount);
+        }
+
+        to.require_auth();
+        let router = env.current_contract_address();
+
+        let token_in = path.get(0).unwrap();
+        let first_pair = get_pair_address(&env, &factory, &token_in, &path.get(1).unwrap())?;
+        TokenClient::new(&env, &token_in).transfer(&to, &first_pair, &amount_in);
+
+        for i in 0..hops {
+            let token_from = path.get(i).unwrap();
+            let token_to = path.get(i + 1).unwrap();
+            let pair = get_pair_address(&env, &factory, &token_from, &token_to)?;
+            let amount_out_hop = amounts.get(i).unwrap();
+            let dest = if i + 1 == hops { &to } else { &router };
+
+            let (token_0, _) = sort_tokens(&token_from, &token_to)?;
+            let pair_client = PairClient::new(&env, &pair);
+            if token_from == token_0 {
+                pair_client.swap(&0, &amount_out_hop, dest);
+            } else {
+                pair_client.swap(&amount_out_hop, &0, dest);
+            }
+
+            if i + 1 < hops {
+                let next_pair =
+                    get_pair_address(&env, &factory, &token_to, &path.get(i + 2).unwrap())?;
+                TokenClient::new(&env, &token_to).transfer(&router, &next_pair, &amount_out_hop);
+            }
+        }
+
         Ok(amounts)
     }
 
@@ -328,9 +367,7 @@ impl Router {
             }
         }
 
-        let mut result = Vec::new(&env);
-        result.push_back(amount_in_needed);
-        Ok(result)
+        Ok(required)
     }
 
     /// Adds liquidity to a token pair (not yet implemented).

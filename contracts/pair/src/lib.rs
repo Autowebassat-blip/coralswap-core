@@ -20,7 +20,9 @@ use dynamic_fee::compute_fee_bps;
 use errors::PairError;
 use events::PairEvents;
 use math::MINIMUM_LIQUIDITY;
-use soroban_sdk::{contract, contractclient, contractimpl, token::TokenClient, Address, Env};
+use soroban_sdk::{
+    contract, contractclient, contractimpl, token::TokenClient, Address, Bytes, Env,
+};
 use storage::{
     get_fee_state, get_pair_state, set_fee_state, set_pair_state, set_reentrancy_guard, FeeState,
     ReentrancyGuard,
@@ -234,6 +236,31 @@ impl Pair {
     }
 
     // ─────────────────────────────────────────
+    // Flash Loan
+    // ─────────────────────────────────────────
+
+    /// Executes a dual-token flash loan with reentrancy guard and invariant enforcement.
+    /// The receiver must repay the full amount + fee before the callback returns.
+    ///
+    /// # Arguments
+    /// * `receiver` - The contract that implements the FlashReceiver interface
+    /// * `amount_a` - Amount of token_a to loan (0 to skip)
+    /// * `amount_b` - Amount of token_b to loan (0 to skip)
+    /// * `data` - Arbitrary data passed to the receiver's callback
+    ///
+    /// # Returns
+    /// `Ok(())` if the loan succeeds, or a `PairError` if repayment fails or other invariants are violated.
+    pub fn flash_loan(
+        env: Env,
+        receiver: Address,
+        amount_a: i128,
+        amount_b: i128,
+        data: Bytes,
+    ) -> Result<(), PairError> {
+        flash_loan::execute_flash_loan(&env, &receiver, amount_a, amount_b, &data)
+    }
+
+    // ─────────────────────────────────────────
     // Views
     // ─────────────────────────────────────────
 
@@ -244,7 +271,10 @@ impl Pair {
     }
 
     /// Consults the oracle for a TWAP over a given window.
-    pub fn consult_twap(env: Env, window_ledgers: u32) -> Result<(i128, i128), errors::OracleError> {
+    pub fn consult_twap(
+        env: Env,
+        window_ledgers: u32,
+    ) -> Result<(i128, i128), errors::OracleError> {
         oracle::consult_twap(&env, window_ledgers)
     }
 
@@ -371,34 +401,36 @@ impl Pair {
         // price_after  = reserve_b / reserve_a (scaled)
         // price_delta  = |price_after - price_before| (scaled)
         const SCALE: i128 = 100_000_000_000_000; // 1e14, matches dynamic_fee::SCALE
-        
-        if reserve_a_before > 0 && reserve_b_before > 0 && pair.reserve_a > 0 && pair.reserve_b > 0 {
+
+        if reserve_a_before > 0 && reserve_b_before > 0 && pair.reserve_a > 0 && pair.reserve_b > 0
+        {
             // price_before = (reserve_b_before * SCALE) / reserve_a_before
             let price_before = reserve_b_before
                 .checked_mul(SCALE)
                 .and_then(|v| v.checked_div(reserve_a_before))
                 .unwrap_or(0);
-            
+
             // price_after = (reserve_b * SCALE) / reserve_a
-            let price_after = pair.reserve_b
+            let price_after = pair
+                .reserve_b
                 .checked_mul(SCALE)
                 .and_then(|v| v.checked_div(pair.reserve_a))
                 .unwrap_or(0);
-            
+
             // price_delta_abs = |price_after - price_before|
             let price_delta_abs = if price_after > price_before {
                 price_after - price_before
             } else {
                 price_before - price_after
             };
-            
+
             // trade_size = total input amount (in terms of reserve A equivalent)
             // For simplicity, use the larger of the two inputs
             let trade_size = amount_a_in.max(amount_b_in);
-            
+
             // total_reserve = reserve_a + reserve_b (simple sum for size weighting)
             let total_reserve = pair.reserve_a.saturating_add(pair.reserve_b);
-            
+
             // Update volatility (ignore errors to not break swaps on edge cases)
             let _ = dynamic_fee::update_volatility(
                 env,

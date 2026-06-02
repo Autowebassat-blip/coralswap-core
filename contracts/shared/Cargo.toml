@@ -1,14 +1,13 @@
 [package]
-name = "coralswap-router"
+name = "coralswap-shared"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib"]
 doctest = false
 
 [dependencies]
-coralswap-shared = { path = "../shared" }
+redstone = { workspace = true }
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]

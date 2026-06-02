@@ -4,6 +4,7 @@ members = [
     "contracts/pair",
     "contracts/lp_token",
     "contracts/router",
+    "contracts/shared",
     "contracts/flash_receiver_interface",
     "contracts/mock_flash_receiver",
     "tests/fuzz"
@@ -13,6 +14,7 @@ resolver = "2"
 [workspace.dependencies]
 soroban-sdk = "=21.7.7"
 soroban-token-sdk = "=21.7.7"
+redstone = { git = "https://github.com/redstone-finance/rust-sdk", tag = "v4.0.0", default-features = false }
 
 [profile.release]
 overflow-checks = true

@@ -15,7 +15,7 @@ use helpers::{
     compute_optimal_amounts, get_amount_in, get_amount_out, get_pair_address,
     get_pair_reserves_and_fee, get_path_amounts_out, sort_tokens, PairClient,
 };
-use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Bytes, Env, Symbol, Vec};
 use storage::{get_factory, get_hubs, set_factory, set_hubs};
 
 #[contract]
@@ -36,6 +36,14 @@ impl Router {
     /// Returns the current list of hub token addresses.
     pub fn get_hubs(env: Env) -> Vec<Address> {
         get_hubs(&env)
+    }
+
+    pub fn verify_redstone_payload(
+        env: Env,
+        payload: Bytes,
+        asset_id: Symbol,
+    ) -> Result<(i128, u64), coralswap_shared::oracle::OracleError> {
+        coralswap_shared::oracle::verify_and_extract_price(&env, payload, asset_id)
     }
 
     /// Finds the best multi-hop route for swapping token_in → token_out.

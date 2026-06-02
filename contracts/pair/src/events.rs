@@ -1,80 +1,124 @@
-use soroban_sdk::{symbol_short, Address, Env, Symbol};
+use soroban_sdk::{Address, Env};
 
-pub struct PairEvents;
+#[allow(dead_code)]
+pub struct FactoryEvents;
 
-impl PairEvents {
-    /// Emits a `swap` event after a successful token swap.
-    ///
-    /// Topics: `("swap", sender)`
-    /// Data:   `(amount_a_in, amount_b_in, amount_a_out, amount_b_out, fee_bps, to)`
-    ///
-    /// Mirrors Uniswap V2 Swap semantics but with i128 amounts and an
-    /// explicit `fee_bps` field to expose the dynamic fee to indexers.
-    pub fn swap(
+#[allow(dead_code)]
+impl FactoryEvents {
+    pub fn pair_created(
         env: &Env,
-        sender: &Address,
-        amount_a_in: i128,
-        amount_b_in: i128,
-        amount_a_out: i128,
-        amount_b_out: i128,
-        fee_bps: u32,
-        to: &Address,
+        token_a: &Address,
+        token_b: &Address,
+        pair: &Address,
+        pair_index: u32,
     ) {
+        let topics = (soroban_sdk::symbol_short!("created"), token_a.clone(), token_b.clone());
+        env.events().publish(topics, (pair.clone(), pair_index));
+    }
+
+    pub fn paused(env: &Env) {
+        env.events().publish((soroban_sdk::symbol_short!("paused"),), ());
+    }
+
+    pub fn unpaused(env: &Env) {
+        env.events().publish((soroban_sdk::symbol_short!("unpaused"),), ());
+    }
+
+    pub fn upgrade_proposed(env: &Env, new_wasm_hash: &[u8; 32]) {
         env.events().publish(
-            (symbol_short!("swap"), sender),
-            (amount_a_in, amount_b_in, amount_a_out, amount_b_out, fee_bps, to),
+            (soroban_sdk::symbol_short!("prop_upg"),),
+            soroban_sdk::BytesN::from_array(env, new_wasm_hash),
         );
     }
 
-    pub fn mint(env: &Env, sender: &Address, amount_a: i128, amount_b: i128) {
-        env.events().publish((symbol_short!("mint"), sender), (amount_a, amount_b));
+    pub fn upgrade_executed(env: &Env, new_version: u32) {
+        env.events().publish((soroban_sdk::symbol_short!("upgraded"),), new_version);
     }
 
-    pub fn burn(env: &Env, sender: &Address, amount_a: i128, amount_b: i128, to: &Address) {
-        env.events().publish((symbol_short!("burn"), sender), (amount_a, amount_b, to));
+    pub fn fee_to_set(env: &Env, new_fee_to: &Option<Address>) {
+        env.events().publish((soroban_sdk::symbol_short!("fee_to"),), new_fee_to.clone());
     }
 
-    pub fn sync(env: &Env, reserve_a: i128, reserve_b: i128) {
-        env.events().publish((symbol_short!("sync"),), (reserve_a, reserve_b));
+    pub fn fee_to_setter_set(env: &Env, new_setter: &Address) {
+        env.events().publish((soroban_sdk::symbol_short!("setter"),), new_setter.clone());
     }
 
-    // Emits a `flash_loan` event after a successful flash loan.
-
-    // Topics: `("pair", "flash_loan")`
-    // Data:   `(receiver, amount_a, amount_b, fee_a, fee_b)`
-    /// Emits a `flash_loan` event after a successful flash loan.
-    ///
-    /// Topics: `("flash_loan", receiver)`
-    /// Data:   `(amount_a, amount_b, fee_a, fee_b)`
-    ///
-    /// "flash_loan" = 10 chars → exceeds the 9-char symbol_short! limit,
-    /// so we use Symbol::new for a runtime allocation.
-    pub fn burn_single_side(
+    pub fn protocol_fee_updated(
         env: &Env,
-        to: &Address,
-        lp_amount: i128,
-        preferred_token: &Address,
-        total_out: i128,
+        old_fee_bps: u32,
+        new_fee_bps: u32,
+        fee_to: &Option<Address>,
     ) {
         env.events().publish(
-            (symbol_short!("burn_ss"), to.clone()),
-            (lp_amount, preferred_token.clone(), total_out),
+            (soroban_sdk::symbol_short!("fee_upd"),),
+            (old_fee_bps, new_fee_bps, fee_to.clone()),
         );
     }
 
-    #[allow(dead_code)]
-    pub fn flash_loan(
+    /// Emitted by `Factory::set_pair_fee` whenever a per-pair fee override is
+    /// installed or updated (issue #132). `ledger` is the current ledger
+    /// sequence at the time the override took effect.
+    pub fn pair_fee_override_set(
         env: &Env,
-        receiver: &Address,
-        amount_a: i128,
-        amount_b: i128,
-        fee_a: i128,
-        fee_b: i128,
-        fee_bps: u32,
+        pair: &Address,
+        old_fee_bps: u32,
+        new_fee_bps: u32,
+        ledger: u32,
     ) {
         env.events().publish(
-            (Symbol::new(env, "flash_loan"), receiver.clone()),
-            (amount_a, amount_b, fee_a, fee_b, fee_bps),
+            (soroban_sdk::symbol_short!("pair_fee"), pair.clone()),
+            (old_fee_bps, new_fee_bps, ledger),
+        );
+    }
+
+    // ── Issue #126: Admin-operation events ────────────────────────────────────
+
+    /// Emitted by `Factory::set_fee_to` whenever the fee-recipient address is
+    /// changed. `ledger` is included so indexers can order events precisely.
+    pub fn fee_to_updated(
+        env: &Env,
+        old: &Address,
+        new: &Address,
+        ledger: u32,
+    ) {
+        env.events().publish(
+            (soroban_sdk::symbol_short!("fee_to_u"),),
+            (old.clone(), new.clone(), ledger),
+        );
+    }
+
+    /// Emitted by `Factory::set_fee_to_setter` whenever the setter role is
+    /// transferred.
+    pub fn fee_to_setter_updated(
+        env: &Env,
+        old: &Address,
+        new: &Address,
+        ledger: u32,
+    ) {
+        env.events().publish(
+            (soroban_sdk::symbol_short!("setter_u"),),
+            (old.clone(), new.clone(), ledger),
+        );
+    }
+
+    /// Emitted whenever the global protocol fee in basis-points is changed.
+    pub fn global_fee_updated(
+        env: &Env,
+        old_bps: u32,
+        new_bps: u32,
+        ledger: u32,
+    ) {
+        env.events().publish(
+            (soroban_sdk::symbol_short!("gfee_upd"),),
+            (old_bps, new_bps, ledger),
+        );
+    }
+
+    /// Emitted whenever the timelock delay is reconfigured.
+    pub fn timelock_updated(env: &Env, new_delay: u64, ledger: u32) {
+        env.events().publish(
+            (soroban_sdk::symbol_short!("tlock_u"),),
+            (new_delay, ledger),
         );
     }
 }

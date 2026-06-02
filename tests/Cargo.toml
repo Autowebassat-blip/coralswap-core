@@ -1,0 +1,11 @@
+[package]
+name = "coralswap-integration-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+soroban-sdk = { version = "=21.7.7", features = ["testutils"] }
+
+[[test]]
+name = "lifecycle"
+path = "integration/lifecycle.rs"

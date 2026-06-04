@@ -9,7 +9,7 @@ mod errors;
 mod storage;
 
 use errors::LpTokenError;
-use soroban_sdk::{contract, contractimpl, Address, Env, String};
+use soroban_sdk::{contract, contractimpl, Address, Bytes, BytesN, Env, String, xdr::ToXdr};
 use storage::{AllowanceEntry, LpTokenKey, TokenMetadata};
 
 #[contract]
@@ -142,6 +142,74 @@ impl LpToken {
         } else {
             0
         }
+    }
+
+    /// Get the current permit nonce for an owner
+    pub fn nonce(env: Env, owner: Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get::<LpTokenKey, u64>(&LpTokenKey::Nonce(owner))
+            .unwrap_or(0)
+    }
+
+    /// Approve spender via off-chain signature (SEP-41 permit)
+    pub fn permit(
+        env: Env,
+        owner: Address,
+        spender: Address,
+        amount: i128,
+        deadline: u32,
+        signature: BytesN<64>,
+    ) -> Result<(), LpTokenError> {
+        if env.ledger().sequence() > deadline {
+            return Err(LpTokenError::PermitExpired);
+        }
+
+        let nonce = Self::nonce(env.clone(), owner.clone());
+        let digest = Self::permit_digest(&env, &owner, &spender, amount, nonce, deadline);
+
+        let public_key = match owner {
+            Address::Account(pk) => pk,
+            _ => return Err(LpTokenError::InvalidSignature),
+        };
+
+        let valid = env.crypto().ed25519_verify(&digest, &signature, &public_key);
+        if !valid {
+            return Err(LpTokenError::InvalidSignature);
+        }
+
+        let key = LpTokenKey::Allowance(owner.clone(), spender.clone());
+        let allowance_entry = AllowanceEntry {
+            amount,
+            expiration_ledger: deadline,
+        };
+        env.storage().persistent().set(&key, &allowance_entry);
+
+        let ledgers_to_live = deadline.saturating_sub(env.ledger().sequence());
+        env.storage().persistent().extend_ttl(&key, ledgers_to_live, ledgers_to_live);
+
+        env.storage()
+            .persistent()
+            .set(&LpTokenKey::Nonce(owner.clone()), &(nonce + 1));
+
+        Ok(())
+    }
+
+    fn permit_digest(
+        env: &Env,
+        owner: &Address,
+        spender: &Address,
+        amount: i128,
+        nonce: u64,
+        deadline: u32,
+    ) -> BytesN<32> {
+        let mut data = Bytes::new(env);
+        data.append(&owner.clone().to_xdr(env));
+        data.append(&spender.clone().to_xdr(env));
+        data.append(&amount.to_be_bytes());
+        data.append(&nonce.to_be_bytes());
+        data.append(&deadline.to_be_bytes());
+        env.crypto().sha256(&data)
     }
 
     /// Set allowance for spender to transfer from `from`

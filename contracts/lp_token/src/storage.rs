@@ -21,4 +21,5 @@ pub enum LpTokenKey {
     Metadata,
     Admin,
     Paused,
+    Nonce(Address),
 }

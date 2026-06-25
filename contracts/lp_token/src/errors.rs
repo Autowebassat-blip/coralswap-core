@@ -12,4 +12,6 @@ pub enum LpTokenError {
     Overflow = 205,
     InvalidExpiration = 206,
     ContractPaused = 207,
+    PermitExpired = 208,
+    InvalidSignature = 209,
 }

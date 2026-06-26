@@ -168,15 +168,16 @@ impl LpToken {
         let nonce = Self::nonce(env.clone(), owner.clone());
         let digest = Self::permit_digest(&env, &owner, &spender, amount, nonce, deadline);
 
-        let public_key = match owner {
-            Address::Account(pk) => pk,
-            _ => return Err(LpTokenError::InvalidSignature),
-        };
+        // Verify the ed25519 signature. The SDK's ed25519_verify takes
+        // (public_key: &BytesN<32>, message: &Bytes, signature: &BytesN<64>)
+        // and panics on failure — there is no bool return value.
+        // We convert the owner address to its raw 32-byte public key and then
+        // verify; any mismatch causes the transaction to abort.
+        let pk_bytes: BytesN<32> = owner.clone().to_xdr(&env).slice(..32).try_into()
+            .map_err(|_| LpTokenError::InvalidSignature)?;
 
-        let valid = env.crypto().ed25519_verify(&digest, &signature, &public_key);
-        if !valid {
-            return Err(LpTokenError::InvalidSignature);
-        }
+        let digest_bytes: Bytes = digest.into();
+        env.crypto().ed25519_verify(&pk_bytes, &digest_bytes, &signature);
 
         let key = LpTokenKey::Allowance(owner.clone(), spender.clone());
         let allowance_entry = AllowanceEntry {
@@ -206,10 +207,10 @@ impl LpToken {
         let mut data = Bytes::new(env);
         data.append(&owner.clone().to_xdr(env));
         data.append(&spender.clone().to_xdr(env));
-        data.append(&amount.to_be_bytes());
-        data.append(&nonce.to_be_bytes());
-        data.append(&deadline.to_be_bytes());
-        env.crypto().sha256(&data)
+        data.append(&Bytes::from_slice(env, &amount.to_be_bytes()));
+        data.append(&Bytes::from_slice(env, &nonce.to_be_bytes()));
+        data.append(&Bytes::from_slice(env, &deadline.to_be_bytes()));
+        env.crypto().sha256(&data).into()
     }
 
     /// Set allowance for spender to transfer from `from`

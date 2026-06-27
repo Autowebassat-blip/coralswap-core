@@ -62,6 +62,30 @@ impl PairEvents {
         );
     }
 
+    /// Emitted by `Pair::mint_with_one_token` after a successful single-sided
+    /// liquidity deposit.
+    ///
+    /// Topics: `("mint_1t", sender)`
+    /// Data:   `(token_in, amount_in, swap_amount, lp_minted)`
+    ///
+    /// `swap_amount` is the portion of `amount_in` that was swapped internally
+    /// to obtain the complementary token before minting.
+    ///
+    /// "mint_1t" = 6 chars — fits `symbol_short!` (≤ 9 chars).
+    pub fn mint_single_side(
+        env: &Env,
+        sender: &Address,
+        token_in: &Address,
+        amount_in: i128,
+        swap_amount: i128,
+        lp_minted: i128,
+    ) {
+        env.events().publish(
+            (symbol_short!("mint_1t"), sender.clone()),
+            (token_in.clone(), amount_in, swap_amount, lp_minted),
+        );
+    }
+
     #[allow(dead_code)]
     pub fn flash_loan(
         env: &Env,
